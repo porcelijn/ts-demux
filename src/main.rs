@@ -2,6 +2,7 @@
 // (c) 2020 Tijn Porcelijn
 //
 
+use std::env::args;
 use std::fs::File;
 use std::io::{self, Read, BufReader, Write, BufWriter};
 use std::collections::HashMap;
@@ -256,9 +257,19 @@ where T: TableProcessor,
 }
 
 fn main() -> io::Result<()>  {
-    let n = match std::env::args().nth(1)
-    { Some(n) => n.parse::<usize>().unwrap(), None => 1 };
-    let reader = File::open("elephants.ts")?;
+    let filename = match args().nth(1) {
+        Some(filename) => filename,
+        None => {
+            println!("Usage: {} <filename> [<n>]",
+                     args().nth(0).unwrap());
+            return Ok(());
+        }
+    };
+    let n = match args().nth(2) {
+        Some(n) => n.parse::<usize>().unwrap(),
+        None => 1
+    };
+    let reader = File::open(filename)?;
     let mut reader = BufReader::with_capacity(n*PACKET_SIZE, reader);
     let mut programs = ProgramMap::new();
     let pat = ProgramAssociationTable {}; 
