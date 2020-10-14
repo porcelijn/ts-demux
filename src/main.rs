@@ -1,6 +1,13 @@
 //
 // (c) 2020 Tijn Porcelijn
 //
+// Simple MPEG2 Transport Stream demuxer
+// - start with PAT handler listening to PID=0
+// - from PAT create PMT listener to PID specified in PAT
+// - from PMT create PES listeners for AAC or h264 elementary streams
+//
+// See: https://en.wikipedia.org/wiki/MPEG_transport_stream
+//
 
 use std::env::args;
 use std::fs::File;
@@ -136,7 +143,7 @@ fn program_map_table(table_data: TableData) -> UpdateProgramMap {
     let program_info_length = program_info_length  as usize;
     assert!(program_info_length < table_data.len());
     // skip program_descriptor [..]
-//      println!(" PMT: pcr_pid={}, program_info_length={}", _pcr_pid, program_info_length);
+//  println!(" PMT: pcr_pid={}, program_info_length={}", _pcr_pid, program_info_length);
 
     let mut es_info_data = &table_data[4 + program_info_length .. ];
 
@@ -163,9 +170,14 @@ fn program_map_table(table_data: TableData) -> UpdateProgramMap {
                     _  => panic!("unknown stream type")
                 };
 
-                println!("  ES: stream_type={} ({}), pid={}, length={}", stream_type, description, es_pid, es_info_length);
+                println!("  ES: stream_type={} ({}), pid={}, length={}",
+                         stream_type, description, es_pid, es_info_length);
 
-                let extension = match stream_type { 0x0F => "aac", 0x1B => "avc",  _ => panic!("unknown stream type") };
+                let extension = match stream_type {
+                    0x0F => "aac",
+                    0x1B => "avc",
+                    _ => panic!("unknown stream type")
+                };
                 let filename = format!("elephants-{}.{}", es_pid, extension);
                 let program = Program::new(&filename[..], 100).unwrap();
                 println!("      created: {}", filename);
@@ -182,6 +194,14 @@ fn program_map_table(table_data: TableData) -> UpdateProgramMap {
 
 struct ProgramSpecificInformation {
     table_processor: TableProcessor
+}
+
+impl ProgramSpecificInformation {
+    fn new_pat() -> Box<dyn PacketProcessor> {
+        Box::new(ProgramSpecificInformation {
+            table_processor: Box::new(program_association_table)
+        })
+    }
 }
 
 impl PacketProcessor for ProgramSpecificInformation {
@@ -203,7 +223,8 @@ impl PacketProcessor for ProgramSpecificInformation {
         let table_header = &packet[offset .. offset + 3];
         assert_ne!(table_header[0], 0xFF);
         let _table_id = table_header[0];
-        assert_eq!(table_header[1] & 0b11110000, 0b10110000); // section syntax indicator = 1, private bit = 0, reserverd bits = 0x3
+        // section syntax indicator = 1, private bit = 0, reserverd bits = 0x3
+        assert_eq!(table_header[1] & 0b11110000, 0b10110000);
         let section_length = ((table_header[1] as u16) & 0x000F) << 8 |
                               (table_header[2] as u16);
         assert!(section_length < 1021);
@@ -259,7 +280,7 @@ fn main() -> io::Result<()>  {
     let reader = File::open(filename)?;
     let mut reader = BufReader::with_capacity(n*PACKET_SIZE, reader);
     let mut programs = ProgramMap::new();
-    programs.insert(0, Box::new(ProgramSpecificInformation { table_processor: Box::new(program_association_table)}) as Box<dyn PacketProcessor>);
+    programs.insert(0, ProgramSpecificInformation::new_pat());
 
     let mut packet = [0; PACKET_SIZE];
     let mut count = 0;
