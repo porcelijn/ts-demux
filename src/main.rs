@@ -104,100 +104,87 @@ impl Drop for Program {
     }
 }
 
-trait TableProcessor {
-    fn process(&mut self, table_data: &[u8]) -> UpdateProgramMap; 
+type TableData<'a> = &'a [u8];
+type TableProcessor = Box<dyn Fn(TableData) -> UpdateProgramMap>;
+
+fn program_association_table(table_data: TableData) -> UpdateProgramMap {
+    assert_eq!(table_data.len(), 4);
+    let program_number = ((table_data[0] as u16) << 8)
+        | (table_data[1] as u16);
+    assert_eq!(table_data[2] & 0b11100000, 0b11100000); // reserved bits
+    let program_pid = (((table_data[2] & 0x1F) as u16) << 8)
+        | (table_data[3] as u16);
+
+    Box::new(move |programs: &mut ProgramMap| {
+        programs.entry(program_pid).or_insert_with(|| {
+            println!(" PAT: number={}, PMT pid={}", program_number, program_pid);
+            let pmt = Box::new(program_map_table);
+            let psi = ProgramSpecificInformation { table_processor: pmt };
+            Box::new(psi)
+        });
+    })
 }
 
-struct ProgramAssociationTable {
-}
-
-impl TableProcessor for ProgramAssociationTable {
-    fn process(&mut self, table_data: &[u8]) -> UpdateProgramMap {
-        assert_eq!(table_data.len(), 4);
-        let program_number = ((table_data[0] as u16) << 8)
-            | (table_data[1] as u16);
-        assert_eq!(table_data[2] & 0b11100000, 0b11100000); // reserved bits
-        let program_pid = (((table_data[2] & 0x1F) as u16) << 8)
-            | (table_data[3] as u16);
-
-        Box::new(move |programs: &mut ProgramMap| {
-            programs.entry(program_pid).or_insert_with(|| {
-                println!(" PAT: number={}, PMT pid={}", program_number, program_pid);
-                let pmt = ProgramMapTable {};
-                let psi = ProgramSpecificInformation { table_processor: pmt };
-                Box::new(psi)
-            });
-        })
-    }
-}
-
-struct ProgramMapTable {
-}
-
-impl TableProcessor for ProgramMapTable {
-    fn process(&mut self, table_data: &[u8]) -> UpdateProgramMap {
-        assert!(table_data.len() > 4);
-        assert_eq!(table_data[0] & 0b11100000, 0b11100000); // reserved bits
-        let _pcr_pid = (((table_data[0] & 0x1F) as u16) << 8)
-            | (table_data[1] as u16);
-        assert_eq!(table_data[2] & 0b11111100, 0b11110000); // 4x1 reserved bits + 2x0 unused
-        let program_info_length = (((table_data[2] & 0b00000011) as u16) << 8)
-            | (table_data[3] as u16);
-        let program_info_length = program_info_length  as usize;
-        assert!(program_info_length < table_data.len());
-        // skip program_descriptor [..]
+fn program_map_table(table_data: TableData) -> UpdateProgramMap {
+    assert!(table_data.len() > 4);
+    assert_eq!(table_data[0] & 0b11100000, 0b11100000); // reserved bits
+    let _pcr_pid = (((table_data[0] & 0x1F) as u16) << 8)
+        | (table_data[1] as u16);
+    assert_eq!(table_data[2] & 0b11111100, 0b11110000); // 4x1 reserved bits + 2x0 unused
+    let program_info_length = (((table_data[2] & 0b00000011) as u16) << 8)
+        | (table_data[3] as u16);
+    let program_info_length = program_info_length  as usize;
+    assert!(program_info_length < table_data.len());
+    // skip program_descriptor [..]
 //      println!(" PMT: pcr_pid={}, program_info_length={}", _pcr_pid, program_info_length);
 
-        let mut es_info_data = &table_data[4 + program_info_length .. ];
+    let mut es_info_data = &table_data[4 + program_info_length .. ];
 
-        let mut add_programs = no_update();
-        while es_info_data.len() >= 5
-        {
-            // Elementary stream specific data
-            let stream_type = es_info_data[0];
-            assert_eq!(es_info_data[1] & 0b11100000, 0b11100000); // reserved bits
-            let es_pid = (((es_info_data[1] & 0x1F) as u16) << 8)
-                | (es_info_data[2] as u16);
-            assert_eq!(es_info_data[3] & 0b11111100, 0b11110000); // 4x1 reserved bits + 2x0 unused
-            let es_info_length = (((es_info_data[3] & 0b00000011) as u16) << 8)
-                | (es_info_data[4] as u16);
-            let es_info_length = es_info_length as usize;
+    let mut add_programs = no_update();
+    while es_info_data.len() >= 5
+    {
+        // Elementary stream specific data
+        let stream_type = es_info_data[0];
+        assert_eq!(es_info_data[1] & 0b11100000, 0b11100000); // reserved bits
+        let es_pid = (((es_info_data[1] & 0x1F) as u16) << 8)
+            | (es_info_data[2] as u16);
+        assert_eq!(es_info_data[3] & 0b11111100, 0b11110000); // 4x1 reserved bits + 2x0 unused
+        let es_info_length = (((es_info_data[3] & 0b00000011) as u16) << 8)
+            | (es_info_data[4] as u16);
+        let es_info_length = es_info_length as usize;
 
-            add_programs = Box::new(move |programs: &mut ProgramMap| {
-                add_programs(programs);
+        add_programs = Box::new(move |programs: &mut ProgramMap| {
+            add_programs(programs);
 
-                programs.entry(es_pid).or_insert_with(|| {
-                    let description = match stream_type {
-                        0x0F => "ISO/IEC 13818-7 ADTS AAC / MPEG-2 lower bit-rate audio",
-                        0x1B => "ISO/IEC 14496-10 / H.264 lower bit-rate video",
-                        _  => panic!("unknown stream type")
-                    };
+            programs.entry(es_pid).or_insert_with(|| {
+                let description = match stream_type {
+                    0x0F => "ISO/IEC 13818-7 ADTS AAC / MPEG-2 lower bit-rate audio",
+                    0x1B => "ISO/IEC 14496-10 / H.264 lower bit-rate video",
+                    _  => panic!("unknown stream type")
+                };
 
-                    println!("  ES: stream_type={} ({}), pid={}, length={}", stream_type, description, es_pid, es_info_length);
+                println!("  ES: stream_type={} ({}), pid={}, length={}", stream_type, description, es_pid, es_info_length);
 
-                    let extension = match stream_type { 0x0F => "aac", 0x1B => "avc",  _ => panic!("unknown stream type") };
-                    let filename = format!("elephants-{}.{}", es_pid, extension);
-                    let program = Program::new(&filename[..], 100).unwrap();
-                    println!("      created: {}", filename);
-                    Box::new(program)
-                });
+                let extension = match stream_type { 0x0F => "aac", 0x1B => "avc",  _ => panic!("unknown stream type") };
+                let filename = format!("elephants-{}.{}", es_pid, extension);
+                let program = Program::new(&filename[..], 100).unwrap();
+                println!("      created: {}", filename);
+                Box::new(program)
             });
+        });
 
-            assert!(5 + es_info_length <= es_info_data.len());
-            es_info_data = &es_info_data[5 + es_info_length ..];
-        }
-        assert_eq!(es_info_data.len(), 0);
-        add_programs
+        assert!(5 + es_info_length <= es_info_data.len());
+        es_info_data = &es_info_data[5 + es_info_length ..];
     }
+    assert_eq!(es_info_data.len(), 0);
+    add_programs
 }
 
-struct ProgramSpecificInformation<T: TableProcessor> {
-  table_processor: T
+struct ProgramSpecificInformation {
+    table_processor: TableProcessor
 }
 
-impl<T> PacketProcessor for ProgramSpecificInformation<T>
-where T: TableProcessor,
-{
+impl PacketProcessor for ProgramSpecificInformation {
     fn process(&mut self, packet: &Packet) -> io::Result<UpdateProgramMap>{
         let mut offset: usize = get_payload_offset(packet);
 
@@ -240,7 +227,7 @@ where T: TableProcessor,
 
         let table_data = &table_syntax_section[5 .. section_length - 4];
 
-        let update_programs = self.table_processor.process(table_data);
+        let update_programs = (self.table_processor)(table_data);
 
         // poly: 0x04C11DB7, init: 0xFFFFFFFF, no ref-in/ref-out/xor-out 
         let _crc32 = &table_syntax_section[section_length - 4 .. section_length];
@@ -272,8 +259,7 @@ fn main() -> io::Result<()>  {
     let reader = File::open(filename)?;
     let mut reader = BufReader::with_capacity(n*PACKET_SIZE, reader);
     let mut programs = ProgramMap::new();
-    let pat = ProgramAssociationTable {}; 
-    programs.insert(0, Box::new(ProgramSpecificInformation { table_processor: pat}) as Box<dyn PacketProcessor>);
+    programs.insert(0, Box::new(ProgramSpecificInformation { table_processor: Box::new(program_association_table)}) as Box<dyn PacketProcessor>);
 
     let mut packet = [0; PACKET_SIZE];
     let mut count = 0;
@@ -293,3 +279,4 @@ fn main() -> io::Result<()>  {
     println!("Read: {} packets", count);
     Ok(())
 }
+
