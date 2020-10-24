@@ -73,12 +73,8 @@ struct Program {
 }
 
 impl Program {
-    fn new(name: &str, n: usize) -> io::Result<Program> {
-        let writer = File::create(name)?;
-        let writer = BufWriter::with_capacity(n * PACKET_SIZE, writer);
-        let writer = Box::new(writer);
-
-        Ok(Program { continuity_counter: 0, writer })
+    fn new(writer: Box<dyn Write>) -> Program {
+        Program { continuity_counter: 0, writer }
     }
 }
 
@@ -132,6 +128,30 @@ fn program_association_table(table_data: TableData) -> UpdateProgramMap {
     })
 }
 
+fn create_writer(es_pid: u16, stream_type: u8) -> Box<dyn Write> {
+    let description = match stream_type {
+        0x0F => "ISO/IEC 13818-7 ADTS AAC / MPEG-2 lower bit-rate audio",
+        0x1B => "ISO/IEC 14496-10 / H.264 lower bit-rate video",
+        _  => panic!("unknown stream type")
+    };
+
+    let extension = match stream_type {
+        0x0F => "aac",
+        0x1B => "avc",
+        _ => panic!("unknown stream type")
+    };
+
+    let filename = format!("elephants-{}.{}", es_pid, extension);
+    println!("  ES: stream_type={} ({}), pid={} -> {}",
+             stream_type, description, es_pid, filename);
+
+    let writer = File::create(&filename[..]).unwrap_or_else(|_| {
+        panic!("Failed to create: {}", filename);
+    });
+    let writer = BufWriter::with_capacity(100 * PACKET_SIZE, writer);
+    Box::new(writer)
+}
+
 fn program_map_table(table_data: TableData) -> UpdateProgramMap {
     assert!(table_data.len() > 4);
     assert_eq!(table_data[0] & 0b11100000, 0b11100000); // reserved bits
@@ -164,23 +184,8 @@ fn program_map_table(table_data: TableData) -> UpdateProgramMap {
             add_programs(programs);
 
             programs.entry(es_pid).or_insert_with(|| {
-                let description = match stream_type {
-                    0x0F => "ISO/IEC 13818-7 ADTS AAC / MPEG-2 lower bit-rate audio",
-                    0x1B => "ISO/IEC 14496-10 / H.264 lower bit-rate video",
-                    _  => panic!("unknown stream type")
-                };
-
-                println!("  ES: stream_type={} ({}), pid={}, length={}",
-                         stream_type, description, es_pid, es_info_length);
-
-                let extension = match stream_type {
-                    0x0F => "aac",
-                    0x1B => "avc",
-                    _ => panic!("unknown stream type")
-                };
-                let filename = format!("elephants-{}.{}", es_pid, extension);
-                let program = Program::new(&filename[..], 100).unwrap();
-                println!("      created: {}", filename);
+                let writer = create_writer(es_pid, stream_type);
+                let program = Program::new(writer);
                 Box::new(program)
             });
         });
