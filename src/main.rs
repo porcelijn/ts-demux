@@ -15,8 +15,10 @@ use std::io::{self, Read, BufReader, Write, BufWriter};
 use std::collections::HashMap;
 
 const PACKET_SIZE: usize = 188;
-
 type Packet = [u8; PACKET_SIZE];
+
+// no significant performance impact beyond 4kB chunks
+const BUFFER_SIZE: usize = 32 * PACKET_SIZE;
 
 fn get_pid(packet: &Packet) -> u16 {
     let pid = ((packet[1] & 0x1f) as u16) << 8 | (packet[2] as u16);
@@ -148,7 +150,7 @@ fn create_writer(es_pid: u16, stream_type: u8) -> Box<dyn Write> {
     let writer = File::create(&filename[..]).unwrap_or_else(|_| {
         panic!("Failed to create: {}", filename);
     });
-    let writer = BufWriter::with_capacity(100 * PACKET_SIZE, writer);
+    let writer = BufWriter::with_capacity(BUFFER_SIZE, writer);
     Box::new(writer)
 }
 
@@ -278,12 +280,8 @@ fn main() -> io::Result<()>  {
             return Ok(());
         }
     };
-    let n = match args().nth(2) {
-        Some(n) => n.parse::<usize>().unwrap(),
-        None => 1
-    };
     let reader = File::open(filename)?;
-    let mut reader = BufReader::with_capacity(n*PACKET_SIZE, reader);
+    let mut reader = BufReader::with_capacity(BUFFER_SIZE, reader);
     let mut programs = ProgramMap::new();
     programs.insert(0, ProgramSpecificInformation::new_pat());
 
